@@ -236,13 +236,26 @@ def count_filled_corners(board, px, py):
     return filled
 
 
-def check_tspin(board, piece, last_action_rotate):
-    """T 피스가 회전으로 마지막 위치에 들어갔고, 중심 대각선 4칸 중 3칸 이상이
-    막혀있으면 T-스핀으로 판정한다."""
-    if piece['type'] != 'T' or not last_action_rotate:
+def check_spin(board, piece, last_action_rotate):
+    """마지막으로 성공한 동작이 '회전'이었을 때 스핀 여부를 판정한다.
+    - T 피스: 공식 가이드라인의 3-코너 규칙 (중심 대각선 4칸 중 3칸 이상 막힘)
+    - J/L/S/Z 피스: 회전 후 좌/우/아래 어느 방향으로도 전혀 움직일 수 없으면
+      (완전히 틈에 끼워진 상태) 스핀으로 인정한다. (jstris 등에서 말하는
+      S-스핀/Z-스핀/J-스핀/L-스핀에 해당)
+    - I, O 피스는 스핀 판정 대상에서 제외한다."""
+    if not last_action_rotate:
         return False
-    px, py = piece['x'] + 1, piece['y'] + 1  # T 피스의 회전축(피벗) 셀
-    return count_filled_corners(board, px, py) >= 3
+    ptype = piece['type']
+    if ptype == 'T':
+        px, py = piece['x'] + 1, piece['y'] + 1  # T 피스의 회전축(피벗) 셀
+        return count_filled_corners(board, px, py) >= 3
+    if ptype in ('J', 'L', 'S', 'Z'):
+        rot = piece['rot']
+        blocked_left = collision(board, ptype, rot, piece['x'] - 1, piece['y'])
+        blocked_right = collision(board, ptype, rot, piece['x'] + 1, piece['y'])
+        blocked_down = collision(board, ptype, rot, piece['x'], piece['y'] + 1)
+        return blocked_left and blocked_right and blocked_down
+    return False
 
 
 def spawn_piece(ptype):
@@ -257,12 +270,60 @@ def try_move(board, piece, dx, dy):
     return False
 
 
+# ---------------------------------------------------------
+# SRS(Super Rotation System) 킥 테이블
+# (dx, dy) - dy는 이 코드의 좌표계 기준(양수 = 아래쪽)으로 이미 변환되어 있음.
+# 이 상하 킥이 있어야 2칸 깊이 홈에 T를 밀어넣는 T-스핀 트리플이나
+# S/Z 피스를 좁은 틈에 끼워 넣는 스핀이 가능해진다.
+# ---------------------------------------------------------
+JLSTZ_KICKS = {
+    (0, 1): [(0, 0), (-1, 0), (-1, -1), (0, 2), (-1, 2)],
+    (1, 0): [(0, 0), (1, 0), (1, 1), (0, -2), (1, -2)],
+    (1, 2): [(0, 0), (1, 0), (1, 1), (0, -2), (1, -2)],
+    (2, 1): [(0, 0), (-1, 0), (-1, -1), (0, 2), (-1, 2)],
+    (2, 3): [(0, 0), (1, 0), (1, -1), (0, 2), (1, 2)],
+    (3, 2): [(0, 0), (-1, 0), (-1, 1), (0, -2), (-1, -2)],
+    (3, 0): [(0, 0), (-1, 0), (-1, 1), (0, -2), (-1, -2)],
+    (0, 3): [(0, 0), (1, 0), (1, -1), (0, 2), (1, 2)],
+}
+
+I_KICKS = {
+    (0, 1): [(0, 0), (-2, 0), (1, 0), (-2, 1), (1, -2)],
+    (1, 0): [(0, 0), (2, 0), (-1, 0), (2, -1), (-1, 2)],
+    (1, 2): [(0, 0), (-1, 0), (2, 0), (-1, -2), (2, 1)],
+    (2, 1): [(0, 0), (1, 0), (-2, 0), (1, 2), (-2, -1)],
+    (2, 3): [(0, 0), (2, 0), (-1, 0), (2, -1), (-1, 2)],
+    (3, 2): [(0, 0), (-2, 0), (1, 0), (-2, 1), (1, -2)],
+    (3, 0): [(0, 0), (1, 0), (-2, 0), (1, 2), (-2, -1)],
+    (0, 3): [(0, 0), (-1, 0), (2, 0), (-1, -2), (2, 1)],
+}
+
+# 180도 회전에 대한 공식 표준은 없으므로, 실전에서 흔히 쓰이는 소규모 오프셋을 사용한다.
+KICKS_180 = [(0, 0), (0, -1), (-1, 0), (1, 0), (0, 1), (-1, -1), (1, -1)]
+
+
+def get_kicks(ptype, from_rot, to_rot):
+    if ptype == 'O':
+        return [(0, 0)]
+    if ptype == 'I':
+        return I_KICKS.get((from_rot, to_rot), [(0, 0)])
+    return JLSTZ_KICKS.get((from_rot, to_rot), [(0, 0)])
+
+
 def try_rotate(board, piece, steps):
-    """steps: +1 = CW, -1 = CCW, 2 = 180"""
-    new_rot = (piece['rot'] + steps) % 4
-    for dx in (0, -1, 1, -2, 2):
-        if not collision(board, piece['type'], new_rot, piece['x'] + dx, piece['y']):
-            piece['x'] += dx
+    """steps: +1 = CW, -1 = CCW, 2 = 180
+    SRS 킥 테이블 순서대로 오프셋을 시도하며, 상하(dy) 이동도 포함되어 있어
+    T-스핀 트리플처럼 2칸 깊이 홈에 끼워 넣는 회전도 가능하다."""
+    from_rot = piece['rot']
+    new_rot = (from_rot + steps) % 4
+    if steps == 2:
+        kicks = KICKS_180
+    else:
+        kicks = get_kicks(piece['type'], from_rot, new_rot)
+    for dx, dy in kicks:
+        nx, ny = piece['x'] + dx, piece['y'] + dy
+        if not collision(board, piece['type'], new_rot, nx, ny):
+            piece['x'], piece['y'] = nx, ny
             piece['rot'] = new_rot
             return True
     return False
@@ -306,7 +367,9 @@ def render(board, piece, next_list, hold_type, score, level, total_lines, paused
             if (c, r) in active_cells:
                 line += COLORS[active_cells[(c, r)]] + '[]' + RESET
             elif (c, r) in ghost_cells:
-                line += '\x1b[2m' + COLORS[ghost_cells[(c, r)]] + '::' + RESET
+                # 'dim'(\x1b[2m) 효과는 구형 cmd.exe/PowerShell 콘솔에서 무시되는 경우가 많아
+                # 조각 색과 상관없이 밝은 흰색 윤곽으로 표시해 확실히 구분되게 한다.
+                line += '\x1b[1;97m' + '::' + RESET
             elif board[r][c]:
                 line += COLORS[board[r][c]] + '[]' + RESET
             else:
@@ -482,7 +545,8 @@ def main():
         s['message_until'] = time.time() + 1.5
 
     def lock_and_advance():
-        tspin = check_tspin(s['board'], s['piece'], s['last_action_rotate'])
+        spin = check_spin(s['board'], s['piece'], s['last_action_rotate'])
+        spin_type = s['piece']['type']
         lock_piece(s['board'], s['piece'])
         s['board'], cleared = clear_lines(s['board'])
         s['pieces_placed'] += 1
@@ -491,11 +555,11 @@ def main():
         label = ''
         difficult = False
 
-        if tspin:
-            tspin_scores = {0: 400, 1: 800, 2: 1200, 3: 1600}
-            gained = tspin_scores.get(cleared, 1600) * s['level']
-            label_map = {0: 'T-SPIN', 1: 'T-SPIN SINGLE', 2: 'T-SPIN DOUBLE', 3: 'T-SPIN TRIPLE'}
-            label = label_map.get(cleared, 'T-SPIN TRIPLE')
+        if spin:
+            spin_scores = {0: 400, 1: 800, 2: 1200, 3: 1600}
+            gained = spin_scores.get(cleared, 1600) * s['level']
+            suffix_map = {0: '', 1: ' SINGLE', 2: ' DOUBLE', 3: ' TRIPLE'}
+            label = f"{spin_type}-SPIN{suffix_map.get(cleared, ' TRIPLE')}"
             difficult = cleared > 0
         elif cleared > 0:
             gained = LINE_SCORES[cleared] * s['level']
