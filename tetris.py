@@ -367,9 +367,9 @@ def render(board, piece, next_list, hold_type, score, level, total_lines, paused
             if (c, r) in active_cells:
                 line += COLORS[active_cells[(c, r)]] + '[]' + RESET
             elif (c, r) in ghost_cells:
-                # 'dim'(\x1b[2m) 효과는 구형 cmd.exe/PowerShell 콘솔에서 무시되는 경우가 많아
-                # 조각 색과 상관없이 밝은 흰색 윤곽으로 표시해 확실히 구분되게 한다.
-                line += '\x1b[1;97m' + '::' + RESET
+                # 조각 색은 그대로 쓰되, 완전히 놓인 조각('[]' 채워진 블록)과는
+                # 구분되도록 옅은 음영 문자 '░░'로 표시한다.
+                line += COLORS[ghost_cells[(c, r)]] + '\x1b[2m' + '░░' + RESET
             elif board[r][c]:
                 line += COLORS[board[r][c]] + '[]' + RESET
             else:
